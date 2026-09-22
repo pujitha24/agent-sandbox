@@ -534,12 +534,14 @@ func (r *SandboxWarmPoolReconciler) reconcilePool(ctx context.Context, warmPool 
 				healthySandboxes = append(healthySandboxes, sb)
 				continue
 			}
-			// Deleting an unschedulable sandbox only produces an equally
-			// unschedulable replacement: under a capacity shortfall the old
-			// delete-and-replace behavior becomes an unbounded delete->create
-			// loop (#1215). Hold the sandbox and retry on a rate-limited
-			// requeue instead; the scheduler will place it when capacity
-			// frees up.
+			// Deleting an unschedulable or scheduling-gated sandbox only
+			// produces an equally stuck replacement: under a capacity
+			// shortfall the old delete-and-replace behavior becomes an
+			// unbounded delete->create loop (#1215); for a gated sandbox the
+			// replacement also re-enters the back of the external admission
+			// queue (#1735). Hold the sandbox and retry on a rate-limited
+			// requeue instead; the scheduler (or the external gate) will
+			// release it when capacity frees up.
 			if r.isSandboxPodUnschedulable(ctx, &sb) {
 				unschedulableReplicas++
 				healthySandboxes = append(healthySandboxes, sb)
@@ -767,12 +769,13 @@ func (r *SandboxWarmPoolReconciler) reconcilePool(ctx context.Context, warmPool 
 	}
 
 	// Surface (and clear) the not-progressing signal. A pool with
-	// unschedulable sandboxes past the readiness grace period cannot make
-	// progress toward spec.replicas until cluster capacity frees up; degrade
-	// visibly instead of churning.
+	// unschedulable or scheduling-gated sandboxes past the readiness grace
+	// period cannot make progress toward spec.replicas until cluster
+	// capacity frees up or the gate is released; degrade visibly instead of
+	// churning.
 	if unschedulableReplicas > 0 {
 		r.setNotProgressing(warmPool, poolKey, true, fmt.Sprintf(
-			"%d/%d sandboxes are unschedulable past the %s readiness grace period; holding them instead of replacing (replacements would be equally unschedulable)",
+			"%d/%d sandboxes are unschedulable or scheduling-gated past the %s readiness grace period; holding them instead of replacing (replacements would be equally stuck)",
 			unschedulableReplicas, desiredReplicas, r.readinessGracePeriod()))
 		requeueAfter = minNonZeroDuration(requeueAfter, r.unschedulableRecheckInterval())
 	} else {
@@ -840,10 +843,15 @@ func (r *SandboxWarmPoolReconciler) setNotProgressing(warmPool *extensionsv1beta
 }
 
 // isSandboxPodUnschedulable reports whether the sandbox's backing pod is
-// currently unschedulable (PodScheduled=False with reason Unschedulable).
-// Missing pods or pods without a definitive PodScheduled=False/Unschedulable
-// condition report false, preserving the delete-and-replace behavior for
-// genuinely stuck sandboxes.
+// currently held back from running by the scheduler: PodScheduled=False with
+// reason Unschedulable (no capacity) or SchedulingGated (parked behind an
+// admission gate, e.g. Kueue). Deleting either only produces an equally
+// stuck replacement — for a gated pod it is worse, since the replacement
+// also loses its place in the admission queue — so both are held rather
+// than replaced (#1215, #1735). Missing pods or pods without a definitive
+// PodScheduled=False/{Unschedulable,SchedulingGated} condition report
+// false, preserving the delete-and-replace behavior for genuinely stuck
+// sandboxes.
 func (r *SandboxWarmPoolReconciler) isSandboxPodUnschedulable(ctx context.Context, sb *sandboxv1beta1.Sandbox) bool {
 	// The backing pod normally shares the sandbox's name; a sandbox that
 	// adopted a warm pod tracks the pod name in an annotation (same
@@ -861,7 +869,8 @@ func (r *SandboxWarmPoolReconciler) isSandboxPodUnschedulable(ctx context.Contex
 	}
 	for _, cond := range pod.Status.Conditions {
 		if cond.Type == corev1.PodScheduled {
-			return cond.Status == corev1.ConditionFalse && cond.Reason == corev1.PodReasonUnschedulable
+			return cond.Status == corev1.ConditionFalse &&
+				(cond.Reason == corev1.PodReasonUnschedulable || cond.Reason == corev1.PodReasonSchedulingGated)
 		}
 	}
 	return false

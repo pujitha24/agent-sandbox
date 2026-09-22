@@ -420,6 +420,33 @@ func TestReconcilePool_UnschedulableStuckGC(t *testing.T) {
 		}
 	})
 
+	t.Run("scheduling-gated sandbox is held, not replaced", func(t *testing.T) {
+		warmPool := newPool()
+		sb := agedSandbox("-gated")
+		pod := podWithScheduled(sb.Name, corev1.ConditionFalse, corev1.PodReasonSchedulingGated)
+
+		recorder := events.NewFakeRecorder(16)
+		lc := newLaggingClient(newFakeClient(newTestScheme(), template, warmPool, sb, pod))
+		r := SandboxWarmPoolReconciler{
+			Client:       lc,
+			Scheme:       newTestScheme(),
+			MaxBatchSize: sandboxCreateDeleteMaxBatchSize,
+			Recorder:     recorder,
+		}
+		ctx := context.Background()
+
+		requeueAfter, err := r.reconcilePool(ctx, warmPool)
+		require.NoError(t, err)
+
+		// Held: still present, no replacement created. Deleting a gated
+		// sandbox would both fail to help (the replacement is gated too)
+		// and lose the pod's place in the external admission queue.
+		got := &sandboxv1beta1.Sandbox{}
+		require.NoError(t, r.Get(ctx, types.NamespacedName{Namespace: poolNamespace, Name: sb.Name}, got))
+		require.Equal(t, 0, lc.createCount(), "no replacement may be created for a scheduling-gated sandbox")
+		require.Equal(t, DefaultUnschedulableRecheckInterval, requeueAfter)
+	})
+
 	t.Run("genuinely stuck sandbox (pod scheduled) is still replaced", func(t *testing.T) {
 		warmPool := newPool()
 		sb := agedSandbox("-stuck")
