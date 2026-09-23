@@ -1961,7 +1961,7 @@ func TestSandboxClaimSandboxAdoption(t *testing.T) {
 		},
 	}
 	claimPastWarmCandidateGracePeriod := claim.DeepCopy()
-	claimPastWarmCandidateGracePeriod.CreationTimestamp = metav1.NewTime(time.Now().Add(-warmCandidateGracePeriod - time.Second))
+	claimPastWarmCandidateGracePeriod.CreationTimestamp = metav1.NewTime(time.Now().Add(-DefaultWarmCandidateGracePeriod - time.Second))
 
 	warmPoolUID := types.UID("warmpool-uid-123")
 	poolNameHash := sandboxcontrollers.NameHash("test-pool")
@@ -2816,7 +2816,7 @@ func TestSandboxClaimWarmCandidateGrace(t *testing.T) {
 		},
 		{
 			name:          "pending candidate past deadline cold starts",
-			claimCreated:  time.Now().Add(-warmCandidateGracePeriod - time.Second),
+			claimCreated:  time.Now().Add(-DefaultWarmCandidateGracePeriod - time.Second),
 			withCandidate: true,
 			wantCold:      true,
 		},
@@ -2829,7 +2829,7 @@ func TestSandboxClaimWarmCandidateGrace(t *testing.T) {
 			require.NoError(t, err)
 			if tc.wantRequeue {
 				require.Greater(t, result.RequeueAfter, time.Duration(0))
-				require.LessOrEqual(t, result.RequeueAfter, warmCandidateRetryInterval)
+				require.LessOrEqual(t, result.RequeueAfter, DefaultWarmCandidateRetryInterval)
 			} else {
 				require.Zero(t, result.RequeueAfter)
 			}
@@ -2847,6 +2847,39 @@ func TestSandboxClaimWarmCandidateGrace(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestWarmCandidateRetryAfterHonorsConfiguredGracePeriod(t *testing.T) {
+	claim := &extensionsv1beta1.SandboxClaim{
+		ObjectMeta: metav1.ObjectMeta{CreationTimestamp: metav1.NewTime(time.Now())},
+	}
+
+	t.Run("defaults to DefaultWarmCandidateGracePeriod when unset", func(t *testing.T) {
+		r := &SandboxClaimReconciler{}
+		retryAfter, ok := r.warmCandidateRetryAfter(claim, claim.CreationTimestamp.Time.Add(DefaultWarmCandidateGracePeriod-time.Second))
+		require.True(t, ok, "still within the default grace period")
+		require.LessOrEqual(t, retryAfter, DefaultWarmCandidateRetryInterval)
+
+		_, ok = r.warmCandidateRetryAfter(claim, claim.CreationTimestamp.Time.Add(DefaultWarmCandidateGracePeriod+time.Second))
+		require.False(t, ok, "past the default grace period")
+	})
+
+	t.Run("configured grace period overrides the default", func(t *testing.T) {
+		r := &SandboxClaimReconciler{
+			WarmCandidateGracePeriod:   10 * time.Second,
+			WarmCandidateRetryInterval: time.Second,
+		}
+		// This point is past the (unused) default grace period but within the
+		// configured one, proving the configured value takes effect rather
+		// than the package default.
+		now := claim.CreationTimestamp.Time.Add(DefaultWarmCandidateGracePeriod + time.Second)
+		retryAfter, ok := r.warmCandidateRetryAfter(claim, now)
+		require.True(t, ok, "still within the configured grace period")
+		require.LessOrEqual(t, retryAfter, r.WarmCandidateRetryInterval)
+
+		_, ok = r.warmCandidateRetryAfter(claim, claim.CreationTimestamp.Time.Add(11*time.Second))
+		require.False(t, ok, "past the configured grace period")
+	})
 }
 
 func TestSandboxClaimAdoptsCandidateThatBecomesNetworkReadyDuringGrace(t *testing.T) {

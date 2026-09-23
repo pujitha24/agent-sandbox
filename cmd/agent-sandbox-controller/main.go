@@ -86,6 +86,8 @@ func main() {
 	var disableSandboxEvents bool
 	var disableClaimEvents bool
 	var disableClaimObservabilityAnnotations bool
+	var sandboxClaimWarmCandidateGracePeriod time.Duration
+	var sandboxClaimWarmCandidateRetryInterval time.Duration
 	var metricsSecureServing bool
 	var metricsCertDir string
 	var tlsMinVersion string
@@ -164,6 +166,14 @@ func main() {
 			"metrics and trace propagation to the Sandbox keep working within the controller process. Costs the on-object "+
 			"debugging breadcrumbs and, after a controller restart, the startup-latency metric for claims first observed "+
 			"by the previous process. Default false (annotations persisted).")
+	flag.DurationVar(&sandboxClaimWarmCandidateGracePeriod, "sandbox-claim-warm-candidate-grace-period", extensionscontrollers.DefaultWarmCandidateGracePeriod,
+		"How long the SandboxClaim controller waits for a warm pool candidate without an observed Pod IP to receive one "+
+			"before falling back to cold creation. Raise this on clusters where pool members are slow to report a Pod IP "+
+			"(image pulls, CNI, virtual-kubelet provider latency) to favor waiting for the pool over cold-creating a Sandbox. "+
+			"Must be a positive duration.")
+	flag.DurationVar(&sandboxClaimWarmCandidateRetryInterval, "sandbox-claim-warm-candidate-retry-interval", extensionscontrollers.DefaultWarmCandidateRetryInterval,
+		"Poll interval at which the SandboxClaim controller re-checks a warm pool candidate for an observed Pod IP within "+
+			"--sandbox-claim-warm-candidate-grace-period. Must be a positive duration.")
 	flag.DurationVar(&sandboxWriteBehindWindow, "sandbox-write-behind-window", 0,
 		"Coalescing window for the Sandbox controller's recoverable metadata-only writes. 0 disables coalescing.")
 	flag.BoolVar(&metricsSecureServing, "metrics-secure-serving", false,
@@ -200,6 +210,14 @@ func main() {
 	}
 	if sandboxWarmPoolUnschedulableRecheckInterval <= 0 {
 		setupLog.Error(nil, "--sandbox-warm-pool-unschedulable-recheck-interval must be a positive duration", "value", sandboxWarmPoolUnschedulableRecheckInterval)
+		os.Exit(1)
+	}
+	if sandboxClaimWarmCandidateGracePeriod <= 0 {
+		setupLog.Error(nil, "--sandbox-claim-warm-candidate-grace-period must be a positive duration", "value", sandboxClaimWarmCandidateGracePeriod)
+		os.Exit(1)
+	}
+	if sandboxClaimWarmCandidateRetryInterval <= 0 {
+		setupLog.Error(nil, "--sandbox-claim-warm-candidate-retry-interval must be a positive duration", "value", sandboxClaimWarmCandidateRetryInterval)
 		os.Exit(1)
 	}
 
@@ -512,6 +530,8 @@ func main() {
 			Tracer:                          instrumenter,
 			AllowedLabelDomains:             allowedDomains,
 			DisableObservabilityAnnotations: disableClaimObservabilityAnnotations,
+			WarmCandidateGracePeriod:        sandboxClaimWarmCandidateGracePeriod,
+			WarmCandidateRetryInterval:      sandboxClaimWarmCandidateRetryInterval,
 		}).SetupWithManager(mgr, sandboxClaimConcurrentWorkers); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "SandboxClaim")
 			os.Exit(1)
