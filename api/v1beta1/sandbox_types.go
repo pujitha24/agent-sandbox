@@ -129,6 +129,9 @@ const (
 	SandboxReasonPodSucceeded = "PodSucceeded"
 	// SandboxReasonPodFailed indicates the backing Pod completed unsuccessfully.
 	SandboxReasonPodFailed = "PodFailed"
+	// SandboxReasonPodTerminating is a Ready=False reason: the backing Pod has a
+	// deletionTimestamp and is shutting down, so it is no longer served by the Service.
+	SandboxReasonPodTerminating = "PodTerminating"
 
 	// SandboxReasonExpired is a Ready=False reason: the Sandbox reached its shutdownTime.
 	// Teardown of its underlying resources may still be pending (see Lifecycle).

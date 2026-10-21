@@ -705,6 +705,13 @@ func (r *SandboxReconciler) computeReadyCondition(sandbox *sandboxv1beta1.Sandbo
 			readyCondition.Message = "Pod failed"
 			return readyCondition
 		}
+		// The kubelet keeps a terminating Pod Running/Ready until its containers stop,
+		// but its endpoints are already removed from the Service.
+		if !pod.DeletionTimestamp.IsZero() {
+			readyCondition.Reason = sandboxv1beta1.SandboxReasonPodTerminating
+			readyCondition.Message = "Pod is terminating"
+			return readyCondition
+		}
 	}
 
 	message := ""
