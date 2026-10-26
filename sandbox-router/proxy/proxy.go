@@ -542,7 +542,12 @@ func (t *metricsTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	// so the counter is incremented lazily as bytes flow — SSE /
 	// streaming responses are accounted for correctly because the
 	// counting happens per Read, not per response.
-	if resp.Body != nil {
+	//
+	// A 101 Switching Protocols body must stay an io.ReadWriteCloser:
+	// httputil.ReverseProxy type-asserts it to hijack the upgraded
+	// connection and returns 502 otherwise. Upgraded traffic is
+	// therefore not counted.
+	if resp.Body != nil && resp.StatusCode != http.StatusSwitchingProtocols {
 		resp.Body = &upstreamCountingReadCloser{
 			rc:      resp.Body,
 			counter: t.metrics.UpstreamRxBytesTotal.WithLabelValues(namespace),

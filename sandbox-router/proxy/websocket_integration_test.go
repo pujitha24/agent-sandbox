@@ -29,11 +29,13 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/gorilla/websocket"
+	"github.com/prometheus/client_golang/prometheus"
 	"k8s.io/apimachinery/pkg/types"
 
 	"sigs.k8s.io/agent-sandbox/sandbox-router/authz"
 	"sigs.k8s.io/agent-sandbox/sandbox-router/cache"
 	"sigs.k8s.io/agent-sandbox/sandbox-router/config"
+	"sigs.k8s.io/agent-sandbox/sandbox-router/observability"
 )
 
 // echoUpgrader is a permissive WebSocket upgrader for tests — origin
@@ -124,6 +126,41 @@ func TestIntegration_WebSocketUpgradeRoundTrips(t *testing.T) {
 		if string(got) != msg {
 			t.Fatalf("echo: got %q want %q", got, msg)
 		}
+	}
+}
+
+// TestIntegration_WebSocketUpgradeWithMetrics is the regression test for
+// the metrics transport wrapping the 101 response body in a type that is
+// not an io.ReadWriteCloser, which made httputil.ReverseProxy answer 502.
+// Production always passes Metrics to NewHandler, so the other upgrade
+// tests do not cover this wiring.
+func TestIntegration_WebSocketUpgradeWithMetrics(t *testing.T) {
+	backend := startEchoBackend(t)
+	defer backend.Close()
+
+	cfg := config.Defaults()
+	cfg.AllowLoopbackPodIP = true
+	cfg.ProxyTimeout = 5 * time.Second
+	cfg.ResponseHeaderTimeout = 2 * time.Second
+	router := httptest.NewServer(NewHandler(Options{
+		Config:  &cfg,
+		Metrics: observability.NewMetrics(prometheus.NewRegistry()),
+		Logger:  logr.Discard(),
+	}))
+	defer router.Close()
+
+	conn := dialThroughRouter(t, router.URL, backend.URL)
+	defer conn.Close()
+
+	if err := conn.WriteMessage(websocket.TextMessage, []byte("hello")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	_, got, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(got) != "hello" {
+		t.Fatalf("echo: got %q want %q", got, "hello")
 	}
 }
 
